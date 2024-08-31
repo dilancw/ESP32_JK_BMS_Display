@@ -8,8 +8,13 @@
 #include "BLEDevice.h"
 
 #include <LiquidCrystal_I2C.h>
+#include <ToneESP32.h>
+#define BUZZER_PIN 18
+#define BUZZER_CHANNEL 0
+ToneESP32 buzzer(BUZZER_PIN, BUZZER_CHANNEL);
 
-LiquidCrystal_I2C lcd(0x27,16,2);  // set the LCD address to 0x27 for a 16 chars and 2 line display
+
+LiquidCrystal_I2C lcd(0x27, 16, 2); // set the LCD address to 0x27 for a 16 chars and 2 line display
 //#include "BLEScan.h"
 //JK_B2A24S15P, Address: c8:47:80:03:b5:b5, manufacturer data: 650b88a0c8478003b5b5, serviceNotifyUuid: 0000ffe0-0000-1000-8000-00805f9b34fb, serviceNotifyUuid: 0000fee7-0000-1000-8000-00805f9b34fb
 
@@ -45,6 +50,7 @@ float total_voltage, current , power;
 float state_of_charge_sensor, capacity_remaining_sensor;
 
 
+#define BATTERY_LOW_VOLTAGE 25.6
 
 #define TAG 0
 std::vector<uint8_t> frame_buffer_;
@@ -529,8 +535,8 @@ static void notifyCallback(
   bool isNotify) {
   //  Serial.print("Notify callback for characteristic ");
   //  Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-    Serial.print(" of data length ");
-    Serial.println(length);
+  Serial.print(" of data length ");
+  Serial.println(length);
   //    Serial.print("data: ");
   //    Serial.println((char*)pData);
   assemble_data(pData, length);
@@ -627,7 +633,12 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Starting Arduino BLE Client application...");
   lcd.init();
+  Wire.setClock(50000);
+
   lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Starting..");
+  buzzer.tone(NOTE_C5, 250);
   BLEDevice::init("");
 
   // Retrieve a Scanner and set the callback we want to use to be informed when we
@@ -738,17 +749,18 @@ void loop() {
     BLEDevice::getScan()->start(0);  // this is just example to start scan after disconnect, most likely there is better way to do it in arduino
   }
 
-  delay(1000); // Delay a second between loops.
+  delay(2000); // Delay a second between loops.
   display();
 } // End of loop
 
 
 void display()
 {
+  static int no_data_count = 0;
   lcd.setCursor(0, 0);
   // print message
 
-  for (int ii =0; ii < 8; ii++)
+  for (int ii = 0; ii < 8; ii++)
   {
     Serial.print("Cell ");
     Serial.print(ii);
@@ -758,9 +770,32 @@ void display()
   Serial.print("Total Voltage = ");
   Serial.print( total_voltage);
   Serial.println("V");
-  
+
+  if (total_voltage < 0.1)
+  {
+    buzzer.tone(NOTE_C4, 200);
+    delay(200);
+    buzzer.tone(NOTE_C4, 200);
+    no_data_count++;
+  }
+  else if ( total_voltage < BATTERY_LOW_VOLTAGE)
+  {
+    buzzer.tone(NOTE_G4, 500);
+    no_data_count = 0;
+  }else
+  {
+    no_data_count = 0;
+  }
+
+  if (no_data_count > 3)
+  {
+    lcd.setCursor(0,0);
+    lcd.print("No Data , Rebooting");
+    ESP.restart();
+  }
   lcd.print(total_voltage);
   lcd.print("V ");
+  total_voltage = 0;
   
   Serial.print("current =");
   Serial.println(current, 2);
@@ -768,7 +803,7 @@ void display()
 
   lcd.print(current);
   lcd.print("A ");
-  
+
   Serial.print("power =");
   Serial.println(power, 2);
   Serial.print("w");
@@ -777,16 +812,16 @@ void display()
   Serial.println(state_of_charge_sensor, 2);
   Serial.print("%");
 
-   lcd.setCursor(0, 1);
+  lcd.setCursor(0, 1);
 
   lcd.print(state_of_charge_sensor);
   lcd.print("% ");
-  
+
   Serial.print("capacity_remaining_sensor =");
   Serial.println(capacity_remaining_sensor, 2);
   Serial.print("Ah");
 
-    lcd.print(capacity_remaining_sensor);
+  lcd.print(capacity_remaining_sensor);
   lcd.print("Ah ");
 
 }
