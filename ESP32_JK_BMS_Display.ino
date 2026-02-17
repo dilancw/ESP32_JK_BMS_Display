@@ -4,24 +4,33 @@
    author unknown
    updated by chegewara
 */
+//New DEVICE ESP32C3 Dev Module where ST7790 connected
+#define ST7789_DISPLAY
+//#define I2C_DISPLY
 
 #include "BLEDevice.h"
 
+#ifdef I2C_DISPLY
 #include <LiquidCrystal_I2C.h>
-#include <ToneESP32.h>
-#define BUZZER_PIN 18
-#define BUZZER_CHANNEL 0
-ToneESP32 buzzer(BUZZER_PIN, BUZZER_CHANNEL);
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // set the LCD address to 0x27 for a 16 chars and 2 line display
+#endif
 
-
-LiquidCrystal_I2C lcd(0x27, 16, 2); // set the LCD address to 0x27 for a 16 chars and 2 line display
+#ifdef ST7789_DISPLAY
+#include <Adafruit_GFX.h>     // Core graphics library
+#include <Adafruit_ST7789.h>  // Hardware-specific library for ST7789
+#include <SPI.h>
+#define TFT_CS 10
+#define TFT_RST 0  // Or set to -1 and connect to Arduino RESET pin
+#define TFT_DC 1
+Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+#endif
 //#include "BLEScan.h"
 //JK_B2A24S15P, Address: c8:47:80:03:b5:b5, manufacturer data: 650b88a0c8478003b5b5, serviceNotifyUuid: 0000ffe0-0000-1000-8000-00805f9b34fb, serviceNotifyUuid: 0000fee7-0000-1000-8000-00805f9b34fb
 
 // The remote service we wish to connect to.
 static BLEUUID serviceNotifyUuid("0000ffe0-0000-1000-8000-00805f9b34fb");
 // The characteristic of the remote service we are interested in.
-static BLEUUID    charReadUUID("ffe1");
+static BLEUUID charReadUUID("ffe1");
 static boolean notify_received = false;
 
 static boolean doConnect = false;
@@ -46,9 +55,12 @@ static const uint16_t MAX_RESPONSE_SIZE = 320;
 
 float cell_voltages[8];
 float average_cell_voltage_sensor, delta_cell_voltage_sensor;
-float total_voltage, current , power;
+float total_voltage, current, power;
 float state_of_charge_sensor, capacity_remaining_sensor;
 
+#define PWR_GRPAH_HISTORY_POINTS 40
+uint8_t track_pointer = 0;
+int powerGraph[PWR_GRPAH_HISTORY_POINTS] = { 0 };
 
 #define BATTERY_LOW_VOLTAGE 25.6
 
@@ -79,7 +91,7 @@ std::vector<uint8_t> frame_buffer_;
 #define ESP_LOGV(tag, ...) print_helper(tag, __VA_ARGS__)
 #define ESP_LOGVV(tag, ...) print_helper(tag, __VA_ARGS__)
 
-std::string str_snprintf(const char *fmt, size_t len, ...) {
+std::string str_snprintf(const char* fmt, size_t len, ...) {
   std::string str;
   va_list args;
 
@@ -124,7 +136,7 @@ std::string to_string(long double value) {
 static char format_hex_char(uint8_t v) {
   return v >= 10 ? 'a' + (v - 10) : '0' + v;
 }
-std::string format_hex(const uint8_t *data, size_t length) {
+std::string format_hex(const uint8_t* data, size_t length) {
   std::string ret;
   ret.resize(length * 2);
   for (size_t i = 0; i < length; i++) {
@@ -133,14 +145,14 @@ std::string format_hex(const uint8_t *data, size_t length) {
   }
   return ret;
 }
-std::string format_hex(const std::vector<uint8_t> &data) {
+std::string format_hex(const std::vector<uint8_t>& data) {
   return format_hex(data.data(), data.size());
 }
 
 static char format_hex_pretty_char(uint8_t v) {
   return v >= 10 ? 'A' + (v - 10) : '0' + v;
 }
-std::string format_hex_pretty(const uint8_t *data, size_t length) {
+std::string format_hex_pretty(const uint8_t* data, size_t length) {
   if (length == 0)
     return "";
   std::string ret;
@@ -155,18 +167,17 @@ std::string format_hex_pretty(const uint8_t *data, size_t length) {
     return ret + " (" + to_string(length) + ")";
   return ret;
 }
-std::string format_hex_pretty(const std::vector<uint8_t> &data) {
+std::string format_hex_pretty(const std::vector<uint8_t>& data) {
   return format_hex_pretty(data.data(), data.size());
 }
 
-void print_helper(int tag, const char* format, ...)
-{
+void print_helper(int tag, const char* format, ...) {
   char buffer[1024];
   va_list args;
-  va_start (args, format);
-  sprintf (buffer, format, args);
+  va_start(args, format);
+  sprintf(buffer, format, args);
   Serial.print(buffer);
-  va_end (args);
+  va_end(args);
 }
 float ieee_float_(uint32_t f) {
   static_assert(sizeof(float) == sizeof f, "`float` has a weird size.");
@@ -174,14 +185,12 @@ float ieee_float_(uint32_t f) {
   memcpy(&ret, &f, sizeof(float));
   return ret;
 }
-void publish_state_(String string , float val)
-{
+void publish_state_(String string, float val) {
   Serial.print(string);
   Serial.print(" = ");
   Serial.println(val);
 }
-void publish_state_i(uint8_t i, String string , float val)
-{
+void publish_state_i(uint8_t i, String string, float val) {
   Serial.print(string);
   Serial.print(i);
   Serial.print(" = ");
@@ -189,8 +198,10 @@ void publish_state_i(uint8_t i, String string , float val)
 }
 
 
-void decode_jk02_cell_info_(const std::vector<uint8_t> &data) {
-  auto jk_get_16bit = [&](size_t i) -> uint16_t { return (uint16_t(data[i + 1]) << 8) | (uint16_t(data[i + 0]) << 0); };
+void decode_jk02_cell_info_(const std::vector<uint8_t>& data) {
+  auto jk_get_16bit = [&](size_t i) -> uint16_t {
+    return (uint16_t(data[i + 1]) << 8) | (uint16_t(data[i + 0]) << 0);
+  };
   auto jk_get_32bit = [&](size_t i) -> uint32_t {
     return (uint32_t(jk_get_16bit(i + 2)) << 16) | (uint32_t(jk_get_16bit(i + 0)) << 0);
   };
@@ -245,8 +256,8 @@ void decode_jk02_cell_info_(const std::vector<uint8_t> &data) {
   float min_cell_voltage = 100.0f;
   float max_cell_voltage = -100.0f;
   for (uint8_t i = 0; i < cells; i++) {
-    float cell_voltage = (float) jk_get_16bit(i * 2 + 6) * 0.001f;
-    float cell_resistance = (float) jk_get_16bit(i * 2 + 64 + offset) * 0.001f;
+    float cell_voltage = (float)jk_get_16bit(i * 2 + 6) * 0.001f;
+    float cell_resistance = (float)jk_get_16bit(i * 2 + 64 + offset) * 0.001f;
     if (cell_voltage > 0 && cell_voltage < min_cell_voltage) {
       min_cell_voltage = cell_voltage;
     }
@@ -254,8 +265,7 @@ void decode_jk02_cell_info_(const std::vector<uint8_t> &data) {
       max_cell_voltage = cell_voltage;
     }
     //publish_state_i(i, "cell voltage", cell_voltage);
-    if (i < 8)
-    {
+    if (i < 8) {
       cell_voltages[i] = cell_voltage;
     }
     //publish_state_i(i, "cell_resistance", cell_resistance);
@@ -275,10 +285,10 @@ void decode_jk02_cell_info_(const std::vector<uint8_t> &data) {
 
   // 58    2   0x00 0x0D              Average Cell Voltage  0.001        V
   //publish_state_("average_cell_voltage_sensor_", (float) jk_get_16bit(58 + offset) * 0.001f);
-  average_cell_voltage_sensor = (float) jk_get_16bit(58 + offset) * 0.001f;
+  average_cell_voltage_sensor = (float)jk_get_16bit(58 + offset) * 0.001f;
   // 60    2   0x00 0x00              Delta Cell Voltage    0.001        V
   //publish_state_("delta_cell_voltage_sensor_", (float) jk_get_16bit(60 + offset) * 0.001f);
-  delta_cell_voltage_sensor = (float) jk_get_16bit(60 + offset) * 0.001f;
+  delta_cell_voltage_sensor = (float)jk_get_16bit(60 + offset) * 0.001f;
   // 62    1   0x00                   Max voltage cell      1
   //publish_state_("max_voltage_cell_sensor_", (float) data[62 + offset] + 1);
   // 63    1   0x00                   Min voltage cell      1
@@ -303,12 +313,12 @@ void decode_jk02_cell_info_(const std::vector<uint8_t> &data) {
   //           data[116 + offset], data[117 + offset]);
 
   // 118   4   0x03 0xD0 0x00 0x00    Battery voltage       0.001        V
-  total_voltage = (float) jk_get_32bit(118 + offset) * 0.001f;
+  total_voltage = (float)jk_get_32bit(118 + offset) * 0.001f;
   //publish_state_("total_voltage_sensor_", total_voltage);
 
   // 122   4   0x00 0x00 0x00 0x00    Battery power         0.001        W
   // 126   4   0x00 0x00 0x00 0x00    Charge current        0.001        A
-  current = (float) ((int32_t) jk_get_32bit(126 + offset)) * 0.001f;
+  current = (float)((int32_t)jk_get_32bit(126 + offset)) * 0.001f;
   //publish_state_("current_sensor_", (float) ((int32_t) jk_get_32bit(126 + offset)) * 0.001f);
 
   // Don't use byte 122 because it's unsigned
@@ -375,7 +385,7 @@ void decode_jk02_cell_info_(const std::vector<uint8_t> &data) {
 
   // 141   1   0x54                   State of charge in   1.0           %
   //publish_state_("state_of_charge_sensor_", (float) data[141 + offset]);
-  state_of_charge_sensor =  (float) data[141 + offset];
+  state_of_charge_sensor = (float)data[141 + offset];
   // 142   4   0x8E 0x0B 0x01 0x00    Capacity_Remain      0.001         Ah
   //publish_state_("capacity_remaining_sensor_", (float) jk_get_32bit(142 + offset) * 0.001f);
   capacity_remaining_sensor = jk_get_32bit(142 + offset) * 0.001f;
@@ -466,9 +476,8 @@ void decode_jk02_cell_info_(const std::vector<uint8_t> &data) {
   //  }
 
   // 299   1   0xCD                   CRC
-
 }
-void decode_(const std::vector<uint8_t> &data) {
+void decode_(const std::vector<uint8_t>& data) {
   //reset_online_status_tracker_();
   Serial.print("In decoding data");
   uint8_t frame_type = data[4];
@@ -490,7 +499,7 @@ void decode_(const std::vector<uint8_t> &data) {
       Serial.println(data[4], HEX);
   }
 }
-void assemble_data(const uint8_t *data, uint16_t length) {
+void assemble_data(const uint8_t* data, uint16_t length) {
   //  Serial.println("In assmeble data");
   //  Serial.print("frame_buffer_ size");
   //  Serial.println(frame_buffer_.size());
@@ -508,7 +517,7 @@ void assemble_data(const uint8_t *data, uint16_t length) {
   frame_buffer_.insert(frame_buffer_.end(), data, data + length);
   //Serial.println(format_hex_pretty(&frame_buffer_.front(), 150).c_str());
   if (frame_buffer_.size() > MIN_RESPONSE_SIZE) {
-    const uint8_t *raw = &frame_buffer_[0];
+    const uint8_t* raw = &frame_buffer_[0];
     // Even if the frame is 320 bytes long the CRC is at position 300 in front of 0xAA 0x55 0x90 0xEB
     const uint16_t frame_size = 300;  // frame_buffer_.size();
 
@@ -544,20 +553,20 @@ static void notifyCallback(
 }
 
 class MyClientCallback : public BLEClientCallbacks {
-    void onConnect(BLEClient* pclient) {
-    }
+  void onConnect(BLEClient* pclient) {
+  }
 
-    void onDisconnect(BLEClient* pclient) {
-      connected = false;
-      Serial.println("onDisconnect");
-    }
+  void onDisconnect(BLEClient* pclient) {
+    connected = false;
+    Serial.println("onDisconnect");
+  }
 };
 
 bool connectToServer() {
   Serial.print("Forming a connection to ");
   Serial.println(myDevice->getAddress().toString().c_str());
 
-  BLEClient*  pClient  = BLEDevice::createClient();
+  BLEClient* pClient = BLEDevice::createClient();
   Serial.println(" - Created client");
 
   pClient->setClientCallbacks(new MyClientCallback());
@@ -565,7 +574,7 @@ bool connectToServer() {
   // Connect to the remove BLE Server.
   pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
   Serial.println(" - Connected to server");
-  pClient->setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
+  pClient->setMTU(517);  //set client to request maximum MTU from server (default is 23 otherwise)
 
   // Obtain a reference to the service we are after in the remote BLE server.
   BLERemoteService* pServiceNotify = pClient->getService(serviceNotifyUuid);
@@ -594,7 +603,7 @@ bool connectToServer() {
   //   Serial.print("The characteristic value was: ");
   //   Serial.println(value.c_str());
   // }
-  uint8_t enable_read_handle[] = {0x01, 0x00};
+  uint8_t enable_read_handle[] = { 0x01, 0x00 };
 
   pRemoteCharacteristicRead->writeValue(&enable_read_handle[0], 2);
 
@@ -608,37 +617,52 @@ bool connectToServer() {
 /**
    Scan for BLE servers and find the first one that advertises the service we are looking for.
 */
-class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
-    /**
+class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+  /**
         Called for each advertising BLE server.
     */
-    void onResult(BLEAdvertisedDevice advertisedDevice) {
-      Serial.print("BLE Advertised Device found: ");
-      Serial.println(advertisedDevice.toString().c_str());
+  void onResult(BLEAdvertisedDevice advertisedDevice) {
+    Serial.print("BLE Advertised Device found: ");
+    Serial.println(advertisedDevice.toString().c_str());
 
-      // We have found a device, let us now see if it contains the service we are looking for.
-      if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceNotifyUuid)) {
+    // We have found a device, let us now see if it contains the service we are looking for.
+    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceNotifyUuid)) {
 
-        BLEDevice::getScan()->stop();
-        myDevice = new BLEAdvertisedDevice(advertisedDevice);
-        doConnect = true;
-        doScan = true;
+      BLEDevice::getScan()->stop();
+      myDevice = new BLEAdvertisedDevice(advertisedDevice);
+      doConnect = true;
+      doScan = true;
 
-      } // Found our server
-    } // onResult
-}; // MyAdvertisedDeviceCallbacks
+    }  // Found our server
+  }    // onResult
+};     // MyAdvertisedDeviceCallbacks
 
 
 void setup() {
   Serial.begin(115200);
   Serial.println("Starting Arduino BLE Client application...");
+
+#ifdef I2C_DISPLY
   lcd.init();
   Wire.setClock(50000);
-
   lcd.backlight();
   lcd.setCursor(0, 0);
   lcd.print("Starting..");
-  buzzer.tone(NOTE_C5, 250);
+#endif
+
+#ifdef ST7789_DISPLAY
+  tft.init(240, 320);
+  tft.setRotation(1);
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setCursor(0, 0);
+  tft.setTextColor(ST77XX_BLUE);
+  tft.setTextWrap(true);
+  tft.setTextSize(4);
+  tft.print("Starting..");
+
+#endif
+
+  //buzzer.tone(NOTE_C5, 250);
   BLEDevice::init("");
 
   // Retrieve a Scanner and set the callback we want to use to be informed when we
@@ -650,7 +674,7 @@ void setup() {
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
   pBLEScan->start(10, false);
-} // End of setup.
+}  // End of setup.
 
 uint8_t crc(const uint8_t data[], const uint16_t len) {
   uint8_t crc = 0;
@@ -731,14 +755,12 @@ void loop() {
   // with the current time since boot.
   if (connected) {
     Serial.println("Requesting cell info");
-    if (notify_received == false)
-    {
+    if (notify_received == false) {
       Serial.println("Trying to get device info");
       write_register(COMMAND_DEVICE_INFO, 0x00000000, 0x00);
       delay(5000);
     } else {
-      if ((millis() - last_cell_update) > 10000)
-      {
+      if ((millis() - last_cell_update) > 10000) {
         Serial.println("Trying to COMMAND_CELL_INFO");
         write_register(COMMAND_CELL_INFO, 0x00000000, 0x00);
       }
@@ -749,60 +771,108 @@ void loop() {
     BLEDevice::getScan()->start(0);  // this is just example to start scan after disconnect, most likely there is better way to do it in arduino
   }
 
-  delay(2000); // Delay a second between loops.
+  delay(2000);  // Delay a second between loops.
   display();
-} // End of loop
+}  // End of loop
 
 
-void display()
-{
+void display() {
   static int no_data_count = 0;
+#ifdef I2C_DISPLY
   lcd.setCursor(0, 0);
+#endif
   // print message
 
-  for (int ii = 0; ii < 8; ii++)
-  {
+  for (int ii = 0; ii < 8; ii++) {
     Serial.print("Cell ");
     Serial.print(ii);
     Serial.print(" ");
     Serial.println(cell_voltages[ii], 4);
   }
   Serial.print("Total Voltage = ");
-  Serial.print( total_voltage);
+  Serial.print(total_voltage);
   Serial.println("V");
 
-  if (total_voltage < 0.1)
-  {
-    buzzer.tone(NOTE_C4, 200);
+  if (total_voltage < 0.1) {
+    // buzzer.tone(NOTE_C4, 200);
     delay(200);
-    buzzer.tone(NOTE_C4, 200);
+    // buzzer.tone(NOTE_C4, 200);
     no_data_count++;
-  }
-  else if ( total_voltage < BATTERY_LOW_VOLTAGE)
-  {
-    buzzer.tone(NOTE_G4, 500);
+  } else if (total_voltage < BATTERY_LOW_VOLTAGE) {
+    //buzzer.tone(NOTE_G4, 500);
     no_data_count = 0;
-  }else
-  {
+  } else {
     no_data_count = 0;
   }
 
-  if (no_data_count > 3)
-  {
-    lcd.setCursor(0,0);
+  if (no_data_count > 3) {
+#ifdef I2C_DISPLY
+    lcd.setCursor(0, 0);
     lcd.print("No Data , Rebooting");
+#endif
     ESP.restart();
   }
+#ifdef I2C_DISPLY
   lcd.print(total_voltage);
   lcd.print("V ");
+  lcd.print(current);
+  lcd.print("A ");
+  lcd.setCursor(0, 1);
+  lcd.print(state_of_charge_sensor);
+  lcd.print("% ");
+  lcd.print(capacity_remaining_sensor);
+  lcd.print("Ah ");
+#endif
+
+#ifdef ST7789_DISPLAY
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextColor(ST77XX_GREEN);
+  tft.setCursor(0, 4);
+  tft.setTextSize(3);
+  tft.print(total_voltage);
+  tft.print("V ");
+  tft.print(current);
+  tft.println("A ");
+  tft.print(state_of_charge_sensor);
+  tft.print("% ");
+  tft.print(capacity_remaining_sensor);
+  tft.println("Ah ");
+
+  tft.setCursor(175, 140);
+  tft.setTextSize(4);
+  tft.setTextColor(ST77XX_RED);
+  int powerInt = round(power);
+  tft.print(powerInt);
+  tft.println("w");
+
+  powerGraph[track_pointer] = powerInt;
+  const int16_t y_offset = 150;
+  const int16_t x_offset = 10;
+  for (size_t i = 0; i < PWR_GRPAH_HISTORY_POINTS; i++) {
+    int16_t power_val = powerGraph[(track_pointer + i) % PWR_GRPAH_HISTORY_POINTS];
+    uint16_t graph_color = ST77XX_BLUE;
+    if(power_val < 0)
+    {
+      graph_color = ST77XX_RED;
+    }else
+    {
+      graph_color = ST77XX_GREEN;
+    }
+    //tft.drawPixel(x_offset + i, y_offset + (power_val / 10), graph_color);
+    tft.drawCircle(x_offset + (i*3), y_offset + (power_val / 10), 2, graph_color);
+  }
+  tft.drawLine(x_offset, y_offset, x_offset + (PWR_GRPAH_HISTORY_POINTS*3) + 5, y_offset, ST77XX_WHITE);
+
+  track_pointer++;
+  if (track_pointer >= PWR_GRPAH_HISTORY_POINTS) track_pointer = 0;
+
+#endif
+
   total_voltage = 0;
-  
+
   Serial.print("current =");
   Serial.println(current, 2);
   Serial.print("A");
-
-  lcd.print(current);
-  lcd.print("A ");
 
   Serial.print("power =");
   Serial.println(power, 2);
@@ -812,16 +882,7 @@ void display()
   Serial.println(state_of_charge_sensor, 2);
   Serial.print("%");
 
-  lcd.setCursor(0, 1);
-
-  lcd.print(state_of_charge_sensor);
-  lcd.print("% ");
-
   Serial.print("capacity_remaining_sensor =");
   Serial.println(capacity_remaining_sensor, 2);
   Serial.print("Ah");
-
-  lcd.print(capacity_remaining_sensor);
-  lcd.print("Ah ");
-
 }
