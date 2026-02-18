@@ -826,7 +826,7 @@ void display() {
 
 #ifdef ST7789_DISPLAY
   tft.fillScreen(ST77XX_BLACK);
-  tft.setTextColor(ST77XX_GREEN);
+  tft.setTextColor(ST77XX_BLUE);
   tft.setCursor(0, 4);
   tft.setTextSize(3);
   tft.print(total_voltage);
@@ -838,33 +838,38 @@ void display() {
   tft.print(capacity_remaining_sensor);
   tft.println("Ah ");
 
-  tft.setCursor(175, 140);
-  tft.setTextSize(4);
-  tft.setTextColor(ST77XX_RED);
+  tft.setCursor(165, 140);
+  tft.setTextSize(5);
+  if (power > 0) {
+    tft.setTextColor(ST77XX_GREEN);
+  } else {
+    tft.setTextColor(ST77XX_RED);
+  }
+
   int powerInt = round(power);
   tft.print(powerInt);
   tft.println("w");
 
   powerGraph[track_pointer] = powerInt;
+  track_pointer++;
+  if (track_pointer >= PWR_GRPAH_HISTORY_POINTS) track_pointer = 0;
+
   const int16_t y_offset = 150;
   const int16_t x_offset = 10;
   for (size_t i = 0; i < PWR_GRPAH_HISTORY_POINTS; i++) {
     int16_t power_val = powerGraph[(track_pointer + i) % PWR_GRPAH_HISTORY_POINTS];
     uint16_t graph_color = ST77XX_BLUE;
-    if(power_val < 0)
-    {
+    if (power_val < 0) {
       graph_color = ST77XX_RED;
-    }else
-    {
+    } else {
       graph_color = ST77XX_GREEN;
     }
     //tft.drawPixel(x_offset + i, y_offset + (power_val / 10), graph_color);
-    tft.drawCircle(x_offset + (i*3), y_offset + (power_val / 10), 2, graph_color);
+    //tft.drawCircle(x_offset + (i * 3), y_offset + (power_val / 10), 2, graph_color);
+    tft.drawRect(x_offset + (i * 3),  y_offset, 3, (power_val / 10),graph_color);
   }
-  tft.drawLine(x_offset, y_offset, x_offset + (PWR_GRPAH_HISTORY_POINTS*3) + 5, y_offset, ST77XX_WHITE);
+  tft.drawLine(x_offset, y_offset, x_offset + (PWR_GRPAH_HISTORY_POINTS * 3) + 5, y_offset, ST77XX_WHITE);
 
-  track_pointer++;
-  if (track_pointer >= PWR_GRPAH_HISTORY_POINTS) track_pointer = 0;
 
 #endif
 
