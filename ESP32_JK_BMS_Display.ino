@@ -5,8 +5,9 @@
    updated by chegewara
 */
 //New DEVICE ESP32C3 Dev Module where ST7790 connected
-#define ST7789_DISPLAY
+//#define ST7789_DISPLAY
 //#define I2C_DISPLY
+#define SSD1306_OLED_DISPLAY
 
 #include "BLEDevice.h"
 
@@ -23,6 +24,18 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);  // set the LCD address to 0x27 for a 16 cha
 #define TFT_RST 0  // Or set to -1 and connect to Arduino RESET pin
 #define TFT_DC 1
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+#endif
+
+
+#ifdef SSD1306_OLED_DISPLAY
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#define SCREEN_WIDTH 128     // OLED display width, in pixels
+#define SCREEN_HEIGHT 64     // OLED display height, in pixels
+#define OLED_RESET -1        // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C  ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+Adafruit_SSD1306 oled_display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #endif
 //#include "BLEScan.h"
 //JK_B2A24S15P, Address: c8:47:80:03:b5:b5, manufacturer data: 650b88a0c8478003b5b5, serviceNotifyUuid: 0000ffe0-0000-1000-8000-00805f9b34fb, serviceNotifyUuid: 0000fee7-0000-1000-8000-00805f9b34fb
@@ -662,6 +675,19 @@ void setup() {
 
 #endif
 
+#ifdef SSD1306_OLED_DISPLAY
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if (!oled_display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+  }
+  oled_display.display();
+  delay(1000);
+  oled_display.setTextSize(2);
+  oled_display.setTextColor(SSD1306_WHITE);
+  oled_display.clearDisplay();
+  oled_display.print("Starting..");
+  oled_display.display();
+#endif
   //buzzer.tone(NOTE_C5, 250);
   BLEDevice::init("");
 
@@ -866,10 +892,60 @@ void display() {
     }
     //tft.drawPixel(x_offset + i, y_offset + (power_val / 10), graph_color);
     //tft.drawCircle(x_offset + (i * 3), y_offset + (power_val / 10), 2, graph_color);
-    tft.drawRect(x_offset + (i * 3),  y_offset, 3, (power_val / 10),graph_color);
+    tft.drawRect(x_offset + (i * 3), y_offset, 3, (power_val / 10), graph_color);
   }
   tft.drawLine(x_offset, y_offset, x_offset + (PWR_GRPAH_HISTORY_POINTS * 3) + 5, y_offset, ST77XX_WHITE);
 
+
+#endif
+
+
+#ifdef SSD1306_OLED_DISPLAY
+
+  oled_display.clearDisplay();
+  oled_display.setTextSize(1);  // Draw 2X-scale text
+  oled_display.setTextColor(SSD1306_WHITE);
+
+  oled_display.setCursor(0, 0);
+  oled_display.print(total_voltage);
+  oled_display.print("V ");
+  oled_display.print(current);
+  oled_display.print("A ");
+
+  // oled_display.print(capacity_remaining_sensor);
+  // oled_display.println("Ah ");
+
+
+  int powerInt = round(power);
+  oled_display.setCursor(0, 20);
+  oled_display.setTextSize(2);
+  oled_display.print(powerInt);
+  oled_display.println("w");
+  int soc = round(state_of_charge_sensor);
+  oled_display.setCursor(0, 42);
+  oled_display.print(soc);
+  oled_display.println("%");
+
+  powerGraph[track_pointer] = powerInt;
+  track_pointer++;
+  if (track_pointer >= PWR_GRPAH_HISTORY_POINTS) track_pointer = 0;
+
+  const int16_t y_offset = 35;
+  const int16_t x_offset = 70;
+  for (size_t i = 0; i < PWR_GRPAH_HISTORY_POINTS; i++) {
+    int16_t power_val = powerGraph[(track_pointer + i) % PWR_GRPAH_HISTORY_POINTS];
+    // uint16_t graph_color = ST77XX_BLUE;
+    // if (power_val < 0) {
+    //   graph_color = ST77XX_RED;
+    // } else {
+    //   graph_color = ST77XX_GREEN;
+    // }
+    oled_display.drawPixel(x_offset + i, y_offset + (power_val / 20), SSD1306_WHITE);
+    //tft.drawCircle(x_offset + (i * 3), y_offset + (power_val / 10), 2, graph_color);
+    //oled_display.drawRect(x_offset + (i * 3), y_offset, 3, (power_val / 20), SSD1306_WHITE);
+  }
+  oled_display.drawLine(x_offset, y_offset, x_offset + (PWR_GRPAH_HISTORY_POINTS * 1) + 5, y_offset, SSD1306_WHITE);
+  oled_display.display();
 
 #endif
 
