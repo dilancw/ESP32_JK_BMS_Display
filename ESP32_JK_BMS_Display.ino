@@ -64,12 +64,35 @@ static const uint8_t FRAME_VERSION_JK02_32S = 0x03;
 static const uint16_t MIN_RESPONSE_SIZE = 298;
 static const uint16_t MAX_RESPONSE_SIZE = 320;
 
+struct SocPoint {
+    uint16_t mv;   // battery voltage in millivolts
+    uint8_t soc;   // state of charge %
+};
+
+const SocPoint socTable[] = {
+    {29400, 100},
+    {27200, 95},
+    {26800, 90},
+    {26400, 80},
+    {26100, 70},
+    {25800, 60},
+    {25600, 50},
+    {25300, 40},
+    {25000, 30},
+    {24800, 20},
+    {24400, 10},
+    {22000, 0}
+};
+
+const int TABLE_SIZE = sizeof(socTable) / sizeof(socTable[0]);
 
 
 float cell_voltages[8];
 float average_cell_voltage_sensor, delta_cell_voltage_sensor;
 float total_voltage, current, power;
-float state_of_charge_sensor, capacity_remaining_sensor;
+float state_of_charge_sensor, capacity_remaining_sensor, total_battery_capacity_setting_sensor;
+uint8_t soc_prediction;
+float time_to_fill_empty_hrs;
 
 #define PWR_GRPAH_HISTORY_POINTS 40
 uint8_t track_pointer = 0;
@@ -404,7 +427,7 @@ void decode_jk02_cell_info_(const std::vector<uint8_t>& data) {
   capacity_remaining_sensor = jk_get_32bit(142 + offset) * 0.001f;
   // 146   4   0x68 0x3C 0x01 0x00    Nominal_Capacity     0.001         Ah
   //  publish_state_("total_battery_capacity_setting_sensor_", (float) jk_get_32bit(146 + offset) * 0.001f);
-  //
+  total_battery_capacity_setting_sensor = jk_get_32bit(146 + offset) * 0.001f;
   //  // 150   4   0x00 0x00 0x00 0x00    Cycle_Count          1.0
   //  publish_state_("charging_cycles_sensor_", (float) jk_get_32bit(150 + offset));
   //
@@ -492,10 +515,10 @@ void decode_jk02_cell_info_(const std::vector<uint8_t>& data) {
 }
 void decode_(const std::vector<uint8_t>& data) {
   //reset_online_status_tracker_();
-  Serial.print("In decoding data");
+  // Serial.print("In decoding data");
   uint8_t frame_type = data[4];
-  Serial.println(frame_type);
-  Serial.println(format_hex_pretty(&data.front(), 150).c_str());
+  // Serial.println(frame_type);
+  // Serial.println(format_hex_pretty(&data.front(), 150).c_str());
   switch (frame_type) {
     case 0x01:
       //decode_jk02_settings_(data);
@@ -524,7 +547,7 @@ void assemble_data(const uint8_t* data, uint16_t length) {
   // Flush buffer on every preamble
   if (data[0] == 0x55 && data[1] == 0xAA && data[2] == 0xEB && data[3] == 0x90) {
     frame_buffer_.clear();
-    Serial.println("frame buffer clear");
+    //Serial.println("frame buffer clear");
   }
 
   frame_buffer_.insert(frame_buffer_.end(), data, data + length);
@@ -557,8 +580,8 @@ static void notifyCallback(
   bool isNotify) {
   //  Serial.print("Notify callback for characteristic ");
   //  Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-  Serial.print(" of data length ");
-  Serial.println(length);
+  // Serial.print(" of data length ");
+  // Serial.println(length);
   //    Serial.print("data: ");
   //    Serial.println((char*)pData);
   assemble_data(pData, length);
@@ -649,6 +672,37 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     }  // Found our server
   }    // onResult
 };     // MyAdvertisedDeviceCallbacks
+
+uint8_t voltageToSOC(uint16_t mv)
+{
+    Serial.print("Input voltage");
+    Serial.println(mv);
+    // Above max
+    if (mv >= socTable[0].mv)
+        return socTable[0].soc;
+
+    // Below min
+    if (mv <= socTable[TABLE_SIZE - 1].mv)
+        return socTable[TABLE_SIZE - 1].soc;
+
+    // Find interval
+    for (int i = 0; i < TABLE_SIZE - 1; i++)
+    {
+        if (mv <= socTable[i].mv && mv > socTable[i + 1].mv)
+        {
+            uint16_t v1 = socTable[i].mv;
+            uint16_t v2 = socTable[i + 1].mv;
+
+            uint8_t s1 = socTable[i].soc;
+            uint8_t s2 = socTable[i + 1].soc;
+
+            // Linear interpolation
+            return s1 + ((long)(mv - v1) * (s2 - s1)) / (v2 - v1);
+        }
+    }
+
+    return 0;
+}
 
 
 void setup() {
@@ -796,12 +850,24 @@ void loop() {
   } else if (doScan) {
     BLEDevice::getScan()->start(0);  // this is just example to start scan after disconnect, most likely there is better way to do it in arduino
   }
-
   delay(2000);  // Delay a second between loops.
+  calculations();
   display();
 }  // End of loop
 
+void calculations()
+{
+  soc_prediction = voltageToSOC((uint16_t)(total_voltage*1000));//convert volt to mV
+  if(current > 0)
+  {
+    time_to_fill_empty_hrs = (total_battery_capacity_setting_sensor - capacity_remaining_sensor)/current;
+  }else
+  {
+    time_to_fill_empty_hrs= capacity_remaining_sensor/current;
+  }
+  
 
+}
 void display() {
   static int no_data_count = 0;
 #ifdef I2C_DISPLY
@@ -815,10 +881,6 @@ void display() {
     Serial.print(" ");
     Serial.println(cell_voltages[ii], 4);
   }
-  Serial.print("Total Voltage = ");
-  Serial.print(total_voltage);
-  Serial.println("V");
-
   if (total_voltage < 0.1) {
     // buzzer.tone(NOTE_C4, 200);
     delay(200);
@@ -908,21 +970,25 @@ void display() {
 
   oled_display.setCursor(0, 0);
   oled_display.print(total_voltage);
-  oled_display.print("V ");
+  oled_display.print("V  ");
   oled_display.print(current);
-  oled_display.print("A ");
-
+  oled_display.println("A");
+  oled_display.setCursor(0, 12);
+  oled_display.print(time_to_fill_empty_hrs);
+  oled_display.print("H  ");
+  oled_display.print(soc_prediction);
+  oled_display.println("%");
   // oled_display.print(capacity_remaining_sensor);
   // oled_display.println("Ah ");
 
 
   int powerInt = round(power);
-  oled_display.setCursor(0, 20);
+  oled_display.setCursor(0, 28);
   oled_display.setTextSize(2);
   oled_display.print(powerInt);
   oled_display.println("w");
   int soc = round(state_of_charge_sensor);
-  oled_display.setCursor(0, 42);
+  oled_display.setCursor(0, 47);
   oled_display.print(soc);
   oled_display.println("%");
 
@@ -940,7 +1006,8 @@ void display() {
     // } else {
     //   graph_color = ST77XX_GREEN;
     // }
-    oled_display.drawPixel(x_offset + i, y_offset + (power_val / 20), SSD1306_WHITE);
+    //oled_display.drawPixel(x_offset + i, y_offset + (power_val / 20), SSD1306_WHITE);
+    oled_display.drawLine(x_offset + i, y_offset + (power_val / 25), x_offset + i, y_offset, SSD1306_WHITE);
     //tft.drawCircle(x_offset + (i * 3), y_offset + (power_val / 10), 2, graph_color);
     //oled_display.drawRect(x_offset + (i * 3), y_offset, 3, (power_val / 20), SSD1306_WHITE);
   }
@@ -948,22 +1015,37 @@ void display() {
   oled_display.display();
 
 #endif
+  Serial.print("Total Voltage = ");
+  Serial.print(total_voltage);
+  Serial.println("V");
 
+  Serial.print("Voltage based SOC prediction");
+  Serial.print(soc_prediction);
+  Serial.println("%");
+  
   total_voltage = 0;
 
   Serial.print("current =");
-  Serial.println(current, 2);
-  Serial.print("A");
+  Serial.print(current, 2);
+  Serial.println("A");
 
   Serial.print("power =");
-  Serial.println(power, 2);
-  Serial.print("w");
+  Serial.print(power, 2);
+  Serial.println("w");
 
   Serial.print("state_of_charge =");
-  Serial.println(state_of_charge_sensor, 2);
-  Serial.print("%");
+  Serial.print(state_of_charge_sensor, 2);
+  Serial.println("%");
 
   Serial.print("capacity_remaining_sensor =");
-  Serial.println(capacity_remaining_sensor, 2);
-  Serial.print("Ah");
+  Serial.print(capacity_remaining_sensor, 2);
+  Serial.println("Ah");
+
+  Serial.print("total_battery_capacity_setting_sensor =");
+  Serial.print(total_battery_capacity_setting_sensor, 2);
+  Serial.println("Ah");
+
+  Serial.print("time_to_fill_empty_hrs =");
+  Serial.print(time_to_fill_empty_hrs, 2);
+  Serial.println("h");
 }
