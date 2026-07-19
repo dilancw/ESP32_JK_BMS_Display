@@ -7,7 +7,8 @@
 //New DEVICE ESP32C3 Dev Module where ST7790 connected
 //#define ST7789_DISPLAY
 //#define I2C_DISPLY
-#define SSD1306_OLED_DISPLAY
+//#define SSD1306_OLED_DISPLAY
+#define CYD
 
 #include "BLEDevice.h"
 
@@ -36,6 +37,31 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 #define OLED_RESET -1        // Reset pin # (or -1 if sharing Arduino reset pin)
 #define SCREEN_ADDRESS 0x3C  ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 Adafruit_SSD1306 oled_display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+#endif
+
+#ifdef CYD
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
+
+TFT_eSPI tft = TFT_eSPI();
+
+// Touchscreen pins
+#define XPT2046_IRQ 36   // T_IRQ
+#define XPT2046_MOSI 32  // T_DIN
+#define XPT2046_MISO 39  // T_OUT
+#define XPT2046_CLK 25   // T_CLK
+#define XPT2046_CS 33    // T_CS
+
+SPIClass touchscreenSPI = SPIClass(VSPI);
+XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
+
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 240
+#define FONT_SIZE 4
+
+// Touchscreen coordinates: (x, y) and pressure (z)
+int x, y, z;
 #endif
 //#include "BLEScan.h"
 //JK_B2A24S15P, Address: c8:47:80:03:b5:b5, manufacturer data: 650b88a0c8478003b5b5, serviceNotifyUuid: 0000ffe0-0000-1000-8000-00805f9b34fb, serviceNotifyUuid: 0000fee7-0000-1000-8000-00805f9b34fb
@@ -742,6 +768,33 @@ void setup() {
   oled_display.print("Starting..");
   oled_display.display();
 #endif
+
+#ifdef CYD
+  // Start the SPI for the touchscreen and init the touchscreen
+  touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+  touchscreen.begin(touchscreenSPI);
+  // Set the Touchscreen rotation in landscape mode
+  // Note: in some displays, the touchscreen might be upside down, so you might need to set the rotation to 3: touchscreen.setRotation(3);
+  touchscreen.setRotation(1);
+
+  // Start the tft display
+  tft.init();
+  // Set the TFT display rotation in landscape mode
+  tft.setRotation(1);
+
+  // Clear the screen before writing to it
+  tft.invertDisplay(false); 
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+  
+  // Set X and Y coordinates for center of display
+  int centerX = SCREEN_WIDTH / 2;
+  int centerY = SCREEN_HEIGHT / 2;
+  //tft.fillRect(50,20,5,100,TFT_RED);
+  tft.drawCentreString("Starting", centerX, 30, FONT_SIZE);
+  //delay(10000);
+
+#endif
   //buzzer.tone(NOTE_C5, 250);
   BLEDevice::init("");
 
@@ -1014,6 +1067,55 @@ void display() {
   oled_display.drawLine(x_offset, y_offset, x_offset + (PWR_GRPAH_HISTORY_POINTS * 1) + 5, y_offset, SSD1306_WHITE);
   oled_display.display();
 
+#endif
+
+#ifdef CYD
+  // Clear TFT screen
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+
+  int centerX = 40;
+  int textY = 20;
+  const int height = 25;
+ 
+  String tempText =  String(total_voltage) + "V";
+  tft.drawString(tempText, centerX, textY, FONT_SIZE);
+
+  textY += height;
+  tempText =  String(current)+ "A";
+  tft.drawString(tempText, centerX, textY, FONT_SIZE);
+
+  textY += height;
+  tempText = String(state_of_charge_sensor) +"%";
+  tft.drawString(tempText, centerX, textY, FONT_SIZE);
+
+  int powerInt = round(power);
+
+  
+  textY += height;
+  tempText = String(powerInt) +"w";
+  tft.drawString(tempText, centerX, textY, FONT_SIZE);
+
+  powerGraph[track_pointer] = powerInt;
+  track_pointer++;
+  if (track_pointer >= PWR_GRPAH_HISTORY_POINTS) track_pointer = 0;
+
+  const int16_t y_offset = 120;
+  const int16_t x_offset = 180;
+  for (size_t i = 0; i < PWR_GRPAH_HISTORY_POINTS; i++) {
+    int16_t power_val = powerGraph[(track_pointer + i) % PWR_GRPAH_HISTORY_POINTS];
+    uint16_t graph_color = TFT_BLUE;
+
+    //tft.drawPixel(x_offset + i, y_offset + (power_val / 10), graph_color);
+    //tft.drawCircle(x_offset + (i * 3), y_offset + (power_val / 10), 2, graph_color);
+if (power_val > 0) {
+  tft.fillRect(x_offset + (i * 3), y_offset - (power_val / 10), 3, (power_val / 10), TFT_MAGENTA);
+
+} else {
+  tft.fillRect(x_offset + (i * 3), y_offset, 3, ((power_val / 10) * -1), TFT_CYAN);
+}
+  }
+  tft.drawLine(x_offset, y_offset, x_offset + (PWR_GRPAH_HISTORY_POINTS * 3) + 5, y_offset, TFT_BLACK);
 #endif
   Serial.print("Total Voltage = ");
   Serial.print(total_voltage);
